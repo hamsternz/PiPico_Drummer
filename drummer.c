@@ -1,3 +1,14 @@
+///////////////////////////////////////////////////////////////////////
+// drummer.c : a simple Drum machine for the Raspberry Pi Pico
+//
+// (c) 2021 Mike Field <hamster@snap.net.nz>
+//
+// Really just a test of making an I2S interface. Plays a few different
+// bars of drum patterns
+//
+///////////////////////////////////////////////////////////////////////
+// This section is all the hardware specific DMA stuff
+///////////////////////////////////////////////////////////////////////
 #include <stdio.h>
 #include <memory.h>
 #include "hardware/dma.h"
@@ -5,17 +16,15 @@
 #include "pio_i2s.pio.h"
 
 #define PIO_I2S_CLKDIV 44.25F
-
 #define N_BUFFERS 4
 #define BUFFER_SIZE 49
-int dma_chan;
-uint32_t buffer[N_BUFFERS][BUFFER_SIZE];
-volatile int buffer_playing = 0;
-int buffer_to_fill = 0;
-void drum_setup(void);
-void drum_fill_buffer(void);
 
-void dma_handler() {
+static int dma_chan;
+static uint32_t buffer[N_BUFFERS][BUFFER_SIZE];
+static volatile int buffer_playing = 0;
+static int buffer_to_fill = 0;
+
+static void dma_handler() {
     // Clear the interrupt request.
     dma_hw->ints0 = 1u << dma_chan;
     // Give the channel a new wave table entry to read from, and re-trigger it
@@ -26,23 +35,17 @@ void dma_handler() {
        buffer_playing++;
 }
 
-int main() {
-    drum_setup();
-    ////////////////////////////////
-    // Fill all the buffers
-    buffer_playing = -1;
-    for(int i = 0; i < N_BUFFERS; i++) {
-       drum_fill_buffer();
-    }
-    buffer_playing = N_BUFFERS-1;
+
+int setup_dma(void) {
      
     //////////////////////////////////////////////////////
     // Set up a PIO state machine to serialise our bits
     uint offset = pio_add_program(pio0, &pio_i2s_program);
     pio_i2s_program_init(pio0, 0, offset, 9, PIO_I2S_CLKDIV);
 
-    // Configure a channel to write the same word (32 bits) repeatedly to PIO0
-    // SM0's TX FIFO, paced by the data request signal from that peripheral.
+    //////////////////////////////////////////////////////
+    // Configure a channel to write the buffers to PIO0 SM0's TX FIFO, 
+    // paced by the data request signal from that peripheral.
     dma_chan = dma_claim_unused_channel(true);
     dma_channel_config c = dma_channel_get_default_config(dma_chan);
     channel_config_set_transfer_data_size(&c, DMA_SIZE_32);
@@ -52,7 +55,7 @@ int main() {
     dma_channel_configure(
         dma_chan,
         &c,
-        &pio0_hw->txf[0],       // Write address (only need to set this once)
+        &pio0_hw->txf[0], // Write address (only need to set this once)
         NULL,
         BUFFER_SIZE,        
         false             // Don't start yet
@@ -65,19 +68,13 @@ int main() {
     irq_set_exclusive_handler(DMA_IRQ_0, dma_handler);
     irq_set_enabled(DMA_IRQ_0, true);
 
-    // Manually call the handler once, to trigger the first transfer
-    dma_handler();
-
-    // Everything else from this point is interrupt-driven. The processor has
-    // time to sit and think about its early retirement -- maybe open a bakery?
-    while (true) {
-       drum_fill_buffer();
-    }
 }
 
+
 ///////////////////////////////////////////////////////////////////////////////////
-// Everything from here down is non-h/w related
+// Everything from here down is non-h/w specific
 ///////////////////////////////////////////////////////////////////////////////////
+// Drum samples
 #include "samples/drum_clap.h"
 #include "samples/drum_hihat.h"
 #include "samples/drum_kick.h"
@@ -86,18 +83,19 @@ int main() {
 
 #define N_VOICES 6
 
-#define BPM           155
-#define SAMPLE_RATE   44100  // ((int)(125000000/PIO_I2S_CLKDIV/32/2))
-#define BEATS_PER_BAR   4
+#define BPM            155
+#define SAMPLE_RATE    ((int)(125000000/PIO_I2S_CLKDIV/32/2))
+#define BEATS_PER_BAR  4
 #define BAR_LEN        72
 #define LOOP_BARS      10
 
+// Counters for where we are in time
 static int bar = 0;
 static int tickOfBar = 0;
 static int sampleOfTick = 0;
 static int samplesPerBeat;
 static int samplesPerTick;
-static int samplesToGenerate;
+
 
 const struct Sounds {
     const int16_t *samples;
@@ -110,6 +108,7 @@ const struct Sounds {
    {drum_perc,  sizeof(drum_perc)/sizeof(int16_t)}
 };
 
+// Parameters for volume and pan
 static struct voice {
     int pan;
     int volume;
@@ -125,9 +124,11 @@ static struct voice {
    {  4,   30, 0, 0, 0}
 };
 
+
 struct Pattern {
    char pattern[N_VOICES][BAR_LEN];
 };
+
 
 const static struct Pattern pattern0 = {{
 //"012345678901234567890123456789012345678901234567890123456789012345678901"
@@ -159,20 +160,18 @@ const static struct Pattern pattern2 = {{
   "         1                          4                          1        "
 }};
 
-const struct Pattern *patterns[LOOP_BARS] = {
+
+static const struct Pattern *patterns[LOOP_BARS] = {
    &pattern0,
    &pattern1,
    &pattern2
 };
 
-const int bars[LOOP_BARS] = { 0,0,0,2,2,2,2,2,1,0};
 
-void drum_setup(void) {
-   samplesPerBeat = SAMPLE_RATE*60/BPM;
-   samplesPerTick = samplesPerBeat * BEATS_PER_BAR / BAR_LEN;
-   samplesToGenerate = samplesPerTick * BAR_LEN * LOOP_BARS;
-}
-uint32_t generate_sample(void) {
+static const int bars[LOOP_BARS] = { 0,0,0,2,2,2,2,2,1,0};
+
+
+static uint32_t generate_sample(void) {
    int32_t samples[N_VOICES];
    int32_t output[2];
 
@@ -219,11 +218,12 @@ uint32_t generate_sample(void) {
       }
    }
 
-   // Convert back to 16 bit
+   // Convert samples back to 16 bit
    return (((output[0] >> 15)&0xFFFF) << 16) + ((output[1] >> 15) & 0xFFFF);
 }
 
-void drum_fill_buffer(void) {
+
+static void drum_fill_buffer(void) {
     if(buffer_playing == buffer_to_fill)
        return;
 
@@ -234,3 +234,30 @@ void drum_fill_buffer(void) {
 }
 
 
+int main(void) {
+    ////////////////////////////////////////////////////////////
+    // Calculate the timing parameters and fill all the buffers
+    ////////////////////////////////////////////////////////////
+    samplesPerBeat = SAMPLE_RATE*60/BPM;
+    samplesPerTick = samplesPerBeat * BEATS_PER_BAR / BAR_LEN;
+    buffer_playing = -1; // To stop the filling routine from stalling
+    for(int i = 0; i < N_BUFFERS; i++) {
+       drum_fill_buffer();
+    }
+    buffer_playing = N_BUFFERS-1;
+
+    ////////////////////////////////////////////////////////////
+    // Set up the DMA transfers, then call the 
+    // handler to trigger the first transfer
+    ////////////////////////////////////////////////////////////
+    setup_dma();
+    dma_handler();
+
+    ////////////////////////////////////////////////////////////
+    // Fill buffers with new samples as they are consumed
+    // by the DMA transfers
+    ////////////////////////////////////////////////////////////
+    while (true) {
+       drum_fill_buffer();
+    }
+}
