@@ -1,0 +1,37 @@
+.program pio_i2s
+
+; Output stream of bits, and add the CLK and LRCLK signals
+.side_set 2
+             set  x,   15         side 0
+             jmp  dropin          side 0
+.wrap_target
+
+left_start:  out pins, 1          side 0 
+             set x,    14         side 1
+left_loop:   out pins, 1          side 0 
+dropin:      jmp x--   left_loop  side 1
+
+right_start: out pins, 1          side 2
+             set x,    14         side 3
+right_loop:  out pins, 1          side 2 
+             jmp x--   right_loop side 3
+.wrap
+
+% c-sdk {
+static inline void pio_i2s_program_init(PIO pio, uint sm, uint offset, uint sdat_pin, float clk_div) {
+    uint bclk_pin = sdat_pin+1;
+    uint lrck_pin = sdat_pin+2;
+    pio_gpio_init(pio, sdat_pin);
+    pio_gpio_init(pio, lrck_pin);
+    pio_gpio_init(pio, bclk_pin);
+    pio_sm_set_consecutive_pindirs(pio, sm, sdat_pin, 3, true);
+    pio_sm_config c = pio_i2s_program_get_default_config(offset);
+    sm_config_set_out_pins(&c, sdat_pin, 1);
+    sm_config_set_sideset_pins(&c, bclk_pin);
+    sm_config_set_fifo_join(&c, PIO_FIFO_JOIN_TX);
+    sm_config_set_clkdiv(&c, clk_div);
+    sm_config_set_out_shift(&c, false, true, 32);
+    pio_sm_init(pio, sm, offset, &c);
+    pio_sm_set_enabled(pio, sm, true);
+}
+%}
