@@ -11,6 +11,14 @@ This uses the Pioroni Pico Audio Pack https://shop.pimoroni.com/products/pico-au
 
 It should be able to be adopted to any other I2S audio pack, but you may need to change the order of bits in the "side-set" values in the pio_i2s.pio hardware driver.
 
+## Building
+If you have the Pico SDK installed, and the encironment correct you should just be able to type:
+
+    cmake CMakeLists.txt
+    make
+
+And then upload the resulting image to your Pico
+
 ## Licensing
 This project is released under the MIT license. It is just a hack so enjoy.
 
